@@ -88,6 +88,43 @@ func (s *Store) persistLocked() error {
 	d := disk{Cases: s.cases, Events: s.events, Idem: s.idem, Drafts: s.drafts}
 	return writeAtomicJSON(s.file(), d, 0644)
 }
+
+// rollbackCase restores the in-memory case and event history to their
+// pre-commit state.  It is used when a transaction must be aborted after
+// the case and events were already mutated in memory.
+func (s *Store) rollbackCase(caseID string, oldCase *domain.ClosureCase, hadCase bool, oldEvents []domain.Event) {
+	if hadCase {
+		s.cases[caseID] = oldCase
+	} else {
+		delete(s.cases, caseID)
+	}
+	if oldEvents != nil {
+		s.events[caseID] = oldEvents
+	} else {
+		delete(s.events, caseID)
+	}
+}
+
+// rollbackCommit restores the in-memory state (case, events, idempotency entry
+// and draft) to its pre-commit state.  It is used when persistLocked succeeded
+// but writeFramesLocked failed, so the snapshot on disk also needs to be
+// rewritten by the caller via persistLocked.
+func (s *Store) rollbackCommit(caseID, requestID string, oldIdem IdempotentResult, hadIdem bool, oldCase *domain.ClosureCase, hadCase bool, oldEvents []domain.Event, oldDraft domain.LayerDraft, hadDraft, deleteDraft bool) {
+	if hadIdem {
+		s.idem[requestID] = oldIdem
+	} else {
+		delete(s.idem, requestID)
+	}
+	s.rollbackCase(caseID, oldCase, hadCase, oldEvents)
+	if deleteDraft {
+		if hadDraft {
+			s.drafts[caseID] = oldDraft
+		} else {
+			delete(s.drafts, caseID)
+		}
+	}
+}
+
 func clone(c *domain.ClosureCase) *domain.ClosureCase {
 	b, _ := json.Marshal(c)
 	var x domain.ClosureCase
@@ -109,12 +146,20 @@ func (s *Store) Save(c *domain.ClosureCase, event domain.Event) error {
 	if old, ok := s.cases[c.CaseID]; ok && old.Status == domain.StatusSealed {
 		return domain.ErrSealed
 	}
+	oldCase, hadCase := s.cases[c.CaseID]
+	oldEvents := append([]domain.Event(nil), s.events[c.CaseID]...)
 	s.cases[c.CaseID] = clone(c)
 	s.events[c.CaseID] = append(s.events[c.CaseID], event)
 	if err := s.persistLocked(); err != nil {
+		s.rollbackCase(c.CaseID, oldCase, hadCase, oldEvents)
 		return err
 	}
-	return s.writeFramesLocked(c.CaseID)
+	if err := s.writeFramesLocked(c.CaseID); err != nil {
+		s.rollbackCase(c.CaseID, oldCase, hadCase, oldEvents)
+		_ = s.persistLocked()
+		return err
+	}
+	return nil
 }
 
 func (s *Store) Commit(c *domain.ClosureCase, event domain.Event, requestID string, result IdempotentResult) error {
@@ -140,6 +185,7 @@ func (s *Store) commit(c *domain.ClosureCase, event domain.Event, requestID stri
 	oldCase, hadCase := s.cases[c.CaseID]
 	oldEvents := append([]domain.Event(nil), s.events[c.CaseID]...)
 	oldDraft, hadDraft := s.drafts[c.CaseID]
+	oldIdem, hadIdem := s.idem[requestID]
 	s.cases[c.CaseID] = clone(c)
 	s.events[c.CaseID] = append(s.events[c.CaseID], event)
 	s.idem[requestID] = result
@@ -147,21 +193,15 @@ func (s *Store) commit(c *domain.ClosureCase, event domain.Event, requestID stri
 		delete(s.drafts, c.CaseID)
 	}
 	if err := s.persistLocked(); err != nil {
-		delete(s.idem, requestID)
-		s.events[c.CaseID] = oldEvents
-		if hadCase {
-			s.cases[c.CaseID] = oldCase
-		} else {
-			delete(s.cases, c.CaseID)
-		}
-		if hadDraft {
-			s.drafts[c.CaseID] = oldDraft
-		} else {
-			delete(s.drafts, c.CaseID)
-		}
+		s.rollbackCommit(c.CaseID, requestID, oldIdem, hadIdem, oldCase, hadCase, oldEvents, oldDraft, hadDraft, deleteDraft)
 		return err
 	}
-	return s.writeFramesLocked(c.CaseID)
+	if err := s.writeFramesLocked(c.CaseID); err != nil {
+		s.rollbackCommit(c.CaseID, requestID, oldIdem, hadIdem, oldCase, hadCase, oldEvents, oldDraft, hadDraft, deleteDraft)
+		_ = s.persistLocked()
+		return err
+	}
+	return nil
 }
 
 func (s *Store) GetDraft(caseID string) (domain.LayerDraft, bool) {
