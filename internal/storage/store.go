@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"siteclosure/internal/domain"
+	"siteclosure/internal/evidence"
 )
 
 type Store struct {
@@ -118,14 +119,23 @@ func (s *Store) Save(c *domain.ClosureCase, event domain.Event) error {
 }
 
 func (s *Store) Commit(c *domain.ClosureCase, event domain.Event, requestID string, result IdempotentResult) error {
-	return s.commit(c, event, requestID, result, false)
+	return s.commit(c, event, requestID, result, false, nil)
 }
 
 func (s *Store) CommitAndDeleteDraft(c *domain.ClosureCase, event domain.Event, requestID string, result IdempotentResult) error {
-	return s.commit(c, event, requestID, result, true)
+	return s.commit(c, event, requestID, result, true, nil)
 }
 
-func (s *Store) commit(c *domain.ClosureCase, event domain.Event, requestID string, result IdempotentResult, deleteDraft bool) error {
+// CommitWithDossier commits the sealed case, audit event and idempotent result
+// together with the closure dossier in one atomic critical section. If the
+// dossier cannot be persisted, the case/event/idempotency changes are rolled
+// back so the case remains in its pre-review state and the request can be
+// retried once storage recovers.
+func (s *Store) CommitWithDossier(c *domain.ClosureCase, event domain.Event, requestID string, result IdempotentResult, dossier evidence.ClosureDossier) error {
+	return s.commit(c, event, requestID, result, false, &dossier)
+}
+
+func (s *Store) commit(c *domain.ClosureCase, event domain.Event, requestID string, result IdempotentResult, deleteDraft bool, dossier *evidence.ClosureDossier) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if old, ok := s.cases[c.CaseID]; ok && old.Status == domain.StatusSealed {
@@ -146,7 +156,7 @@ func (s *Store) commit(c *domain.ClosureCase, event domain.Event, requestID stri
 	if deleteDraft {
 		delete(s.drafts, c.CaseID)
 	}
-	if err := s.persistLocked(); err != nil {
+	rollback := func() {
 		delete(s.idem, requestID)
 		s.events[c.CaseID] = oldEvents
 		if hadCase {
@@ -159,9 +169,24 @@ func (s *Store) commit(c *domain.ClosureCase, event domain.Event, requestID stri
 		} else {
 			delete(s.drafts, c.CaseID)
 		}
+	}
+	if err := s.persistLocked(); err != nil {
+		rollback()
 		return err
 	}
-	return s.writeFramesLocked(c.CaseID)
+	if dossier != nil {
+		if err := s.saveDossierLocked(*dossier); err != nil {
+			if rbErr := s.persistLocked(); rbErr != nil {
+				return fmt.Errorf("dossier: %w (rollback: %v)", err, rbErr)
+			}
+			rollback()
+			return err
+		}
+	}
+	if err := s.writeFramesLocked(c.CaseID); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (s *Store) GetDraft(caseID string) (domain.LayerDraft, bool) {

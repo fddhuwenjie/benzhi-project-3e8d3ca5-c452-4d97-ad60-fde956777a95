@@ -105,6 +105,55 @@ func (s *Service) mutateOptions(id, reqID string, payload any, expected int64, e
 	return resp, nil
 }
 
+// mutateWithDossier mirrors mutate but commits the sealed case, the audit event
+// and the idempotent result together with the closure dossier via
+// CommitWithDossier. This guarantees that a dossier persistence failure leaves
+// the case in its pre-review state: no sealed status, no sealed_at, no
+// review_completed event and no cached success response, so the same request
+// can be retried after storage recovers.
+func (s *Service) mutateWithDossier(id, reqID string, payload any, expected int64, eventType string, fn func(*domain.ClosureCase) (string, error)) (any, error) {
+	m := s.lock(id)
+	m.Lock()
+	defer m.Unlock()
+	if cached, ok, err := s.guard(reqID, payload); err != nil {
+		return nil, err
+	} else if ok {
+		return cached, nil
+	}
+	c, err := s.store.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	if expected > 0 && c.Revision != expected {
+		return nil, domain.ErrConflict
+	}
+	actor, err := fn(c)
+	if err != nil {
+		return nil, err
+	}
+	eventPayload := map[string]any{"request_id": reqID, "state_digest": domain.CanonicalDigest(c)}
+	if eventType == "review_completed" && len(c.ReviewHistory) > 0 {
+		eventPayload["review"] = c.ReviewHistory[len(c.ReviewHistory)-1]
+	}
+	ev, _ := s.store.AppendEvent(c, eventType, actor, eventPayload, time.Now().Unix())
+	resp := map[string]any{"case": c, "event": ev}
+	responseBytes, _ := json.Marshal(resp)
+	commit := storage.IdempotentResult{Fingerprint: fingerprint(payload), Response: responseBytes}
+	// The dossier must capture the event chain including the event that is
+	// about to be committed, so build it from the existing events plus the new
+	// event rather than re-reading the store (which has not persisted the new
+	// event yet).
+	eventsForDossier := append(s.store.Events(id), ev)
+	dossier, err := s.evidence.Build(c, eventsForDossier)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.store.CommitWithDossier(c, ev, reqID, commit, dossier); err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 type CreateCaseRequest struct{ RequestID, CaseID, SiteCode, Coordinates, CompletionDigest, Surface, Actor string }
 
 func (s *Service) CreateCase(r CreateCaseRequest) (any, error) {
@@ -365,24 +414,14 @@ type ReviewRequest struct {
 }
 
 func (s *Service) Review(r ReviewRequest) (any, error) {
-	out, err := s.mutate(r.CaseID, r.RequestID, r, r.ExpectedRevision, "review_completed", func(c *domain.ClosureCase) (string, error) {
+	if r.Decision == "pass" {
+		return s.mutateWithDossier(r.CaseID, r.RequestID, r, r.ExpectedRevision, "review_completed", func(c *domain.ClosureCase) (string, error) {
+			return r.Actor, c.ReviewWithIssues(r.Actor, r.Decision, r.Issues, time.Now().UTC())
+		})
+	}
+	return s.mutate(r.CaseID, r.RequestID, r, r.ExpectedRevision, "review_completed", func(c *domain.ClosureCase) (string, error) {
 		return r.Actor, c.ReviewWithIssues(r.Actor, r.Decision, r.Issues, time.Now().UTC())
 	})
-	if err != nil || r.Decision != "pass" {
-		return out, err
-	}
-	c, err := s.store.Get(r.CaseID)
-	if err != nil {
-		return nil, err
-	}
-	dossier, err := s.evidence.Build(c, s.store.Events(r.CaseID))
-	if err != nil {
-		return nil, err
-	}
-	if err := s.store.SaveDossier(dossier); err != nil {
-		return nil, err
-	}
-	return out, nil
 }
 func (s *Service) GetCase(id string) (*domain.ClosureCase, error) { return s.store.Get(id) }
 func (s *Service) Events(id string) []domain.Event                { return s.store.Events(id) }

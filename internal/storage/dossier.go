@@ -19,11 +19,20 @@ func (s *Store) dossierPath(caseID string) (string, error) {
 }
 
 func (s *Store) SaveDossier(dossier evidence.ClosureDossier) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveDossierLocked(dossier)
+}
+
+// saveDossierLocked persists the sealed dossier. The caller must hold s.mu.
+// Duplicates with an identical digest are tolerated so that replaying a
+// successfully sealed review remains idempotent.
+func (s *Store) saveDossierLocked(dossier evidence.ClosureDossier) error {
 	path, err := s.dossierPath(dossier.CaseID)
 	if err != nil {
 		return err
 	}
-	if existing, loadErr := s.LoadDossier(dossier.CaseID); loadErr == nil {
+	if existing, loadErr := s.loadDossierLocked(dossier.CaseID); loadErr == nil {
 		if existing.SHA256Digest != dossier.SHA256Digest {
 			return fmt.Errorf("sealed dossier already exists with a different digest")
 		}
@@ -38,6 +47,14 @@ func (s *Store) SaveDossier(dossier evidence.ClosureDossier) error {
 }
 
 func (s *Store) LoadDossier(caseID string) (evidence.ClosureDossier, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.loadDossierLocked(caseID)
+}
+
+// loadDossierLocked reads and validates the stored dossier. The caller must
+// hold s.mu (at least for reading).
+func (s *Store) loadDossierLocked(caseID string) (evidence.ClosureDossier, error) {
 	path, err := s.dossierPath(caseID)
 	if err != nil {
 		return evidence.ClosureDossier{}, err
