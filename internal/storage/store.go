@@ -94,6 +94,15 @@ func clone(c *domain.ClosureCase) *domain.ClosureCase {
 	_ = json.Unmarshal(b, &x)
 	return &x
 }
+func cloneEvents(es []domain.Event) []domain.Event {
+	if len(es) == 0 {
+		return nil
+	}
+	b, _ := json.Marshal(es)
+	var out []domain.Event
+	_ = json.Unmarshal(b, &out)
+	return out
+}
 func (s *Store) Get(id string) (*domain.ClosureCase, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -206,14 +215,14 @@ func (s *Store) Snapshot() Snapshot {
 	out := Snapshot{Cases: make(map[string]*domain.ClosureCase, len(s.cases)), Events: make(map[string][]domain.Event, len(s.events))}
 	for id, c := range s.cases {
 		out.Cases[id] = clone(c)
-		out.Events[id] = append([]domain.Event(nil), s.events[id]...)
+		out.Events[id] = cloneEvents(s.events[id])
 	}
 	return out
 }
 func (s *Store) Events(id string) []domain.Event {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return append([]domain.Event(nil), s.events[id]...)
+	return cloneEvents(s.events[id])
 }
 func (s *Store) GetIdem(id string) (IdempotentResult, bool) {
 	s.mu.RLock()

@@ -1,6 +1,7 @@
 package domain
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -55,6 +56,28 @@ func ValidateEventChain(caseID string, events []Event) error {
 	return nil
 }
 
+// normalizePayload converts a payload that may hold typed struct values into a
+// tree of generic Go values (map[string]any, []any, string, float64, bool, nil)
+// via a JSON round-trip. This guarantees that event digests remain stable across
+// JSON marshalling and persistence: a value computed from a typed struct and the
+// same value reconstructed from a generic map produce identical JSON and thus
+// identical digests. It also ensures callers querying events cannot mutate the
+// storage's internal typed references through the returned payload.
+func normalizePayload(payload map[string]any) map[string]any {
+	if payload == nil {
+		return nil
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return payload
+	}
+	var out map[string]any
+	if err := json.Unmarshal(b, &out); err != nil {
+		return payload
+	}
+	return out
+}
+
 func NewEvent(caseID string, revision int64, sequence int64, eventType, actor string, payload map[string]any, at time.Time, previous string) Event {
 	event := Event{
 		Sequence:       sequence,
@@ -63,7 +86,7 @@ func NewEvent(caseID string, revision int64, sequence int64, eventType, actor st
 		Type:           eventType,
 		At:             at.UTC(),
 		Actor:          actor,
-		Payload:        payload,
+		Payload:        normalizePayload(payload),
 		PreviousDigest: previous,
 	}
 	event.Digest = EventDigest(event)
