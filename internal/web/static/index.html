@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>探方回填封护验收台</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div><strong>探方回填封护验收台</strong><span id="connection">本地档案服务</span></div>
+    <form id="lookup" class="lookup"><input id="case-id" placeholder="输入 case_id" required><button>打开案件</button></form>
+  </header>
+  <main>
+    <section id="overview">
+      <div class="section-head"><h1>案件总览</h1><button id="new-case">建立案件</button></div>
+      <form id="filters" class="filters"><input name="site_code" placeholder="遗址代码"><select name="status"><option value="">全部状态</option><option value="draft">草拟</option><option value="baseline_frozen">基线已冻结</option><option value="plan_approved">方案已批准</option><option value="in_progress">施工中</option><option value="remediation">缺陷整改</option><option value="awaiting_review">待验收</option><option value="sealed">已封存</option></select><input name="responsible" placeholder="责任人员"><select name="has_open_defect"><option value="">全部缺陷情况</option><option value="true">有开放缺陷</option><option value="false">无开放缺陷</option></select><button>筛选</button></form>
+      <div id="stats" class="stats"></div>
+      <div class="table-wrap"><table><thead><tr><th>案件</th><th>状态</th><th>层次</th><th>缺陷</th><th>最后事件</th><th></th></tr></thead><tbody id="case-list"></tbody></table></div>
+    </section>
+    <section id="empty" class="empty" hidden>
+      <div class="section-head"><h1>建立封护案件</h1><button id="cancel-create" type="button">取消</button></div>
+      <form id="create" class="form-grid">
+        <label>案件编号<input name="case_id" value="TF-2026-001" required></label>
+        <label>遗址代码<input name="site_code" value="SITE-A" required></label>
+        <label>探方坐标<input name="trench_coordinates" value="N10/E12" required></label>
+        <label>记录摘要<input name="completion_record_digest" value="record-sha256-demo" required></label>
+        <label class="wide">暴露面状态<textarea name="exposed_surface_condition" required>暴露面稳定，无积水</textarea></label>
+        <label>建档人<input name="created_by" value="记录员-甲" required></label>
+        <button class="primary">建立案件</button>
+      </form>
+    </section>
+    <section id="workspace" hidden>
+      <div class="case-head"><div><span class="eyebrow">当前案件</span><h1 id="case-title"></h1><p id="case-meta"></p></div><div><button id="back-overview" type="button">返回总览</button> <span id="status" class="status"></span></div></div>
+      <div class="layout">
+        <div>
+          <section id="integrity-panel" class="panel" hidden><h2>基线完整性</h2><div id="integrity"></div></section>
+          <section class="panel"><div class="section-head"><h2>探方剖面</h2><span id="progress"></span></div><div id="profile" class="profile"></div></section>
+          <section class="panel"><h2>当前操作</h2><div id="actions"></div></section>
+          <section class="panel"><div class="section-head"><h2>缺陷待办</h2><span id="defect-count"></span></div><div id="defects"></div></section>
+        </div>
+        <aside class="panel timeline-panel"><div class="section-head"><h2>证据时间线</h2><button id="refresh" class="icon" title="刷新">↻</button></div><ol id="timeline"></ol></aside>
+      </div>
+    </section>
+  </main>
+  <div id="notice" role="status" aria-live="polite"></div>
+  <template id="freeze-form"><form class="action-form" data-action="baseline"><h3>冻结回填基线</h3><label>操作人<input name="actor" required></label><label>责任人员（逗号分隔）<input name="people" required></label><div id="precheck" class="wide review-box">请先执行冻结预检</div><input name="confirmed_digest" type="hidden"><button type="button" data-precheck>执行预检</button><button class="primary">确认摘要并冻结</button></form></template>
+  <template id="plan-form"><form class="action-form" data-action="plan"><h3>编制分层方案</h3><label>编制人<input name="prepared_by" required></label><label>层数<input name="layer_count" type="number" min="1" max="8" value="2"></label><div id="layer-fields"></div><button class="primary">保存方案</button></form></template>
+  <template id="approve-form"><form class="action-form" data-action="approve"><h3>负责人批准</h3><div id="plan-review" class="wide review-box"></div><label>批准人<input name="actor" required></label><div id="risk-list" class="wide"></div><button class="primary">批准当前方案</button></form></template>
+  <template id="execute-form"><form class="action-form" data-action="draft"><h3>当前施工层草稿</h3><div id="expected-layer" class="wide"></div><label>实际材料<input name="material_code"></label><label>实际厚度 mm<input name="actual_thickness_mm" type="number"></label><label>含水率 %<input name="moisture_percent" type="number" step="0.1"></label><label>压实度 %<input name="compaction_percent" type="number" step="0.1"></label><label>施工人员<input name="performed_by"></label><label>证据摘要<input name="evidence_digest"></label><div id="draft-check" class="wide review-box"></div><button class="primary" name="mode" value="save">保存草稿</button><button name="mode" value="check">核对提交</button></form></template>
+  <template id="review-form"><form class="action-form" data-action="review"><h3>独立验收</h3><label>验收员<input name="actor" required></label><label>结论<select name="decision"><option value="pass">通过并封存</option><option value="return">退回整改</option></select></label><div id="review-issues" class="wide" hidden></div><button id="add-issue" type="button" hidden>增加问题项</button><button class="primary">提交验收</button></form></template>
+  <script src="/static/app.js" defer></script>
+</body>
+</html>
